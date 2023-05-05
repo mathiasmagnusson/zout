@@ -1,4 +1,7 @@
 const std = @import("std");
+const c = @cImport({
+    @cInclude("SDL.h");
+});
 
 const Vec2 = @Vector(2, i32);
 
@@ -11,7 +14,25 @@ const PADDLE_WIDTH = 100;
 const PADDLE_HEIGHT = 10;
 
 pub fn main() !void {
-    std.log.info("Hello!", .{});
+    if (c.SDL_Init(c.SDL_INIT_VIDEO) < 0) {
+        std.log.info("SDL_Init failed: {s}", .{c.SDL_GetError()});
+        return error.SDLInit;
+    }
+    defer c.SDL_Quit();
+
+    var window = c.SDL_CreateWindow(
+        "Zout!",
+        c.SDL_WINDOWPOS_UNDEFINED,
+        c.SDL_WINDOWPOS_UNDEFINED,
+        WIDTH,
+        HEIGHT,
+        0,
+    ) orelse {
+        std.log.info("SDL_CreateWindow failed: {s}", .{c.SDL_GetError()});
+        return error.CreateWindow;
+    };
+    defer c.SDL_DestroyWindow(window);
+
     var renderer = c.SDL_CreateRenderer(window, -1, 0) orelse {
         std.log.info("SDL_CreateRenderer failed: {s}", .{c.SDL_GetError()});
         return error.CreateRenderer;
