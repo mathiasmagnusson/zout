@@ -63,10 +63,15 @@ fn sdlErr(return_value: anytype) !void {
 const State = struct {
     renderer: *c.SDL_Renderer,
 
+    left_down: bool = false,
+    right_down: bool = false,
+    space_down: bool = false,
+
     quit: bool = false,
+    level: usize = 1,
 
     ball: Vec2 = Vec2{ .x = WIDTH / 2, .y = HEIGHT - 25 },
-    ball_vel: Vec2 = Vec2{ .x = BALL_SPEED, .y = -BALL_SPEED },
+    ball_vel: Vec2 = Vec2{ .x = 0, .y = 0 },
 
     paddle: Vec2 = Vec2{ .x = WIDTH / 2, .y = HEIGHT - 10 },
     paddle_vel: i32 = 0,
@@ -75,16 +80,8 @@ const State = struct {
     obstacle_count: usize = OBSTACLES_C * OBSTACLES_R,
 
     fn init(renderer: *c.SDL_Renderer) @This() {
-        var prng = std.rand.DefaultPrng.init(@bitCast(u64, std.time.timestamp()));
-        var rand = prng.random();
-        var ball_vel_x = rand.intRangeAtMost(i32, -BALL_SPEED, BALL_SPEED);
-        if (ball_vel_x == 0) ball_vel_x = 1;
         return .{
             .renderer = renderer,
-            .ball_vel = Vec2{
-                .x = ball_vel_x,
-                .y = BALL_SPEED,
-            },
         };
     }
 
@@ -114,8 +111,6 @@ fn loop(s: *State) !void {
     render(s);
 }
 
-var left_down = false;
-var right_down = false;
 fn handle_events(s: *State) void {
     var event: c.SDL_Event = undefined;
     while (c.SDL_PollEvent(&event) != 0) {
@@ -123,8 +118,9 @@ fn handle_events(s: *State) void {
         switch (event.type) {
             c.SDL_QUIT => s.quit = true,
             c.SDL_KEYDOWN, c.SDL_KEYUP => switch (event.key.keysym.sym) {
-                c.SDLK_LEFT => left_down = down,
-                c.SDLK_RIGHT => right_down = down,
+                c.SDLK_LEFT => s.left_down = down,
+                c.SDLK_RIGHT => s.right_down = down,
+                c.SDLK_SPACE => s.space_down = down,
                 c.SDLK_q => s.quit = true,
                 else => {},
             },
@@ -133,25 +129,32 @@ fn handle_events(s: *State) void {
     }
 
     s.paddle_vel = 0;
-    if (left_down) s.paddle_vel -= PADDLE_SPEED;
-    if (right_down) s.paddle_vel += PADDLE_SPEED;
+    if (s.left_down) s.paddle_vel -= PADDLE_SPEED;
+    if (s.right_down) s.paddle_vel += PADDLE_SPEED;
 }
 
 fn update(s: *State) void {
     s.ball.x += s.ball_vel.x;
     s.ball.y += s.ball_vel.y;
+
     s.paddle.x += s.paddle_vel;
 
     s.paddle.x = m.clamp(s.paddle.x, PADDLE_WIDTH / 2, WIDTH - PADDLE_WIDTH / 2);
     s.ball.x = m.clamp(s.ball.x, BALL_SIZE / 2, WIDTH - BALL_SIZE / 2);
     s.ball.y = m.clamp(s.ball.y, BALL_SIZE / 2, HEIGHT - BALL_SIZE / 2);
 
-    if (s.ball.x - BALL_SIZE / 2 <= 0)
-        s.ball_vel.x = m.absInt(s.ball_vel.x) catch 1;
-    if (s.ball.x + BALL_SIZE / 2 >= WIDTH)
-        s.ball_vel.x = -(m.absInt(s.ball_vel.x) catch 1);
+    if (s.ball_vel.x == 0 and s.ball_vel.y == 0) {
+        s.ball.x = s.paddle.x;
+        s.ball.y = s.paddle.y - (PADDLE_HEIGHT + BALL_SIZE) * 2;
+        if (s.space_down) {
+            s.ball_vel.y = @intCast(i32, s.level) * BALL_SPEED;
+        }
+    }
+
+    if (s.ball.x - BALL_SIZE / 2 <= 0 or s.ball.x + BALL_SIZE / 2 >= WIDTH)
+        s.ball_vel.x = -s.ball_vel.x;
     if (s.ball.y - BALL_SIZE / 2 <= 0)
-        s.ball_vel.y = BALL_SPEED;
+        s.ball_vel.y = m.absInt(s.ball_vel.y) catch unreachable;
     if (s.ball.y + BALL_SIZE / 2 >= HEIGHT)
         s.quit = true;
 
@@ -159,7 +162,7 @@ fn update(s: *State) void {
         s.paddle.x + PADDLE_WIDTH / 2 >= s.ball.x - BALL_SIZE / 2 and
         s.ball.y + BALL_SIZE / 2 >= s.paddle.y - PADDLE_HEIGHT / 2)
     {
-        s.ball_vel.y = -BALL_SPEED;
+        s.ball_vel.y = -(m.absInt(s.ball_vel.y) catch unreachable);
 
         s.ball_vel.x += @divTrunc(s.paddle_vel, PADDLE_SPEED) * 2;
         s.ball_vel.x += @divTrunc((s.ball.x - s.paddle.x) * BALL_SPEED, PADDLE_WIDTH / 2);
@@ -184,9 +187,16 @@ fn update(s: *State) void {
             destroyed = i;
         }
     }
+
     if (destroyed) |d| {
         s.obstacle_arr[d] = s.obstacle_arr[s.obstacle_count - 1];
         s.obstacle_count -= 1;
+        if (s.obstacle_count == 0) {
+            s.obstacle_arr = initial_obstacles();
+            s.obstacle_count = s.obstacle_arr.len;
+            s.level += 1;
+            s.ball_vel = .{ .x = 0, .y = 0 };
+        }
     }
 }
 
