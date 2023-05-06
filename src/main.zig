@@ -48,9 +48,9 @@ pub fn main() !void {
     defer c.SDL_DestroyRenderer(renderer);
     try sdlErr(c.SDL_RenderSetVSync(renderer, 1));
 
-    var state = State.init(renderer);
-    while (!state.quit) {
-        try loop(&state);
+    var s = State.init(renderer);
+    while (!s.quit) {
+        try loop(&s);
     }
 }
 
@@ -75,8 +75,16 @@ const State = struct {
     obstacle_count: usize = OBSTACLES_C * OBSTACLES_R,
 
     fn init(renderer: *c.SDL_Renderer) @This() {
+        var prng = std.rand.DefaultPrng.init(@bitCast(u64, std.time.timestamp()));
+        var rand = prng.random();
+        var ball_vel_x = rand.intRangeAtMost(i32, -BALL_SPEED, BALL_SPEED);
+        if (ball_vel_x == 0) ball_vel_x = 1;
         return .{
             .renderer = renderer,
+            .ball_vel = Vec2{
+                .x = ball_vel_x,
+                .y = BALL_SPEED,
+            },
         };
     }
 
@@ -100,116 +108,120 @@ fn initial_obstacles() [OBSTACLES_C * OBSTACLES_R]Vec2 {
     return res;
 }
 
-fn loop(state: *State) !void {
-    handle_events(state);
-    update(state);
-    render(state);
+fn loop(s: *State) !void {
+    handle_events(s);
+    update(s);
+    render(s);
 }
 
 var left_down = false;
 var right_down = false;
-fn handle_events(state: *State) void {
+fn handle_events(s: *State) void {
     var event: c.SDL_Event = undefined;
     while (c.SDL_PollEvent(&event) != 0) {
         const down = event.type == c.SDL_KEYDOWN;
         switch (event.type) {
-            c.SDL_QUIT => state.quit = true,
+            c.SDL_QUIT => s.quit = true,
             c.SDL_KEYDOWN, c.SDL_KEYUP => switch (event.key.keysym.sym) {
                 c.SDLK_LEFT => left_down = down,
                 c.SDLK_RIGHT => right_down = down,
-                c.SDLK_q => state.quit = true,
+                c.SDLK_q => s.quit = true,
                 else => {},
             },
             else => {},
         }
     }
 
-    state.paddle_vel = 0;
-    if (left_down) state.paddle_vel -= PADDLE_SPEED;
-    if (right_down) state.paddle_vel += PADDLE_SPEED;
+    s.paddle_vel = 0;
+    if (left_down) s.paddle_vel -= PADDLE_SPEED;
+    if (right_down) s.paddle_vel += PADDLE_SPEED;
 }
 
-fn update(state: *State) void {
-    state.ball.x += state.ball_vel.x;
-    state.ball.y += state.ball_vel.y;
-    state.paddle.x += state.paddle_vel;
+fn update(s: *State) void {
+    s.ball.x += s.ball_vel.x;
+    s.ball.y += s.ball_vel.y;
+    s.paddle.x += s.paddle_vel;
 
-    state.paddle.x = m.clamp(state.paddle.x, PADDLE_WIDTH / 2, WIDTH - PADDLE_WIDTH / 2);
-    state.ball.x = m.clamp(state.ball.x, BALL_SIZE / 2, WIDTH - BALL_SIZE / 2);
-    state.ball.y = m.clamp(state.ball.y, BALL_SIZE / 2, HEIGHT - BALL_SIZE / 2);
+    s.paddle.x = m.clamp(s.paddle.x, PADDLE_WIDTH / 2, WIDTH - PADDLE_WIDTH / 2);
+    s.ball.x = m.clamp(s.ball.x, BALL_SIZE / 2, WIDTH - BALL_SIZE / 2);
+    s.ball.y = m.clamp(s.ball.y, BALL_SIZE / 2, HEIGHT - BALL_SIZE / 2);
 
-    if (state.ball.x + BALL_SIZE / 2 >= WIDTH)
-        state.ball_vel.x = -BALL_SPEED;
-    if (state.ball.x - BALL_SIZE / 2 <= 0)
-        state.ball_vel.x = BALL_SPEED;
-    if (state.ball.y - BALL_SIZE / 2 <= 0)
-        state.ball_vel.y = BALL_SPEED;
-    if (state.ball.y + BALL_SIZE / 2 >= HEIGHT)
-        state.quit = true;
+    if (s.ball.x - BALL_SIZE / 2 <= 0)
+        s.ball_vel.x = m.absInt(s.ball_vel.x) catch 1;
+    if (s.ball.x + BALL_SIZE / 2 >= WIDTH)
+        s.ball_vel.x = -(m.absInt(s.ball_vel.x) catch 1);
+    if (s.ball.y - BALL_SIZE / 2 <= 0)
+        s.ball_vel.y = BALL_SPEED;
+    if (s.ball.y + BALL_SIZE / 2 >= HEIGHT)
+        s.quit = true;
 
-    if (state.paddle.x - PADDLE_WIDTH / 2 <= state.ball.x + BALL_SIZE / 2 and
-        state.paddle.x + PADDLE_WIDTH / 2 >= state.ball.x - BALL_SIZE / 2 and
-        state.ball.y + BALL_SIZE / 2 >= state.paddle.y - PADDLE_HEIGHT / 2)
+    if (s.paddle.x - PADDLE_WIDTH / 2 <= s.ball.x + BALL_SIZE / 2 and
+        s.paddle.x + PADDLE_WIDTH / 2 >= s.ball.x - BALL_SIZE / 2 and
+        s.ball.y + BALL_SIZE / 2 >= s.paddle.y - PADDLE_HEIGHT / 2)
     {
-        state.ball_vel.y = -BALL_SPEED;
+        s.ball_vel.y = -BALL_SPEED;
+
+        s.ball_vel.x += @divTrunc(s.paddle_vel, PADDLE_SPEED) * 2;
+        s.ball_vel.x += @divTrunc((s.ball.x - s.paddle.x) * BALL_SPEED, PADDLE_WIDTH / 2);
+        s.ball_vel.x = m.clamp(s.ball_vel.x, -BALL_SPEED * 2, BALL_SPEED * 2);
     }
 
     var destroyed: ?usize = null;
-    for (state.obstacles()) |obst, i| {
-        const dx = m.absInt(obst.x - state.ball.x) catch 0;
-        const dy = m.absInt(obst.y - state.ball.y) catch 0;
+    for (s.obstacles()) |obst, i| {
+        const dx = m.absInt(obst.x - s.ball.x) catch 0;
+        const dy = m.absInt(obst.y - s.ball.y) catch 0;
         const overlap_x = (OBSTACLE_WIDTH + BALL_SIZE) / 2 - dx;
         const overlap_y = (OBSTACLE_HEIGHT + BALL_SIZE) / 2 - dy;
         if (overlap_x >= 0 and overlap_y >= 0) {
             if (overlap_x <= overlap_y) {
-                state.ball_vel.x = -state.ball_vel.x;
-                state.ball.x -= overlap_x * m.sign(obst.x - state.ball.x);
+                s.ball_vel.x = -s.ball_vel.x;
+                s.ball.x -= overlap_x * m.sign(obst.x - s.ball.x);
             }
             if (overlap_x >= overlap_y) {
-                state.ball_vel.y = -state.ball_vel.y;
-                state.ball.y -= overlap_y * m.sign(obst.y - state.ball.y);
+                s.ball_vel.y = -s.ball_vel.y;
+                s.ball.y -= overlap_y * m.sign(obst.y - s.ball.y);
             }
             destroyed = i;
         }
     }
     if (destroyed) |d| {
-        state.obstacle_arr[d] = state.obstacle_arr[state.obstacle_count - 1];
-        state.obstacle_count -= 1;
+        s.obstacle_arr[d] = s.obstacle_arr[s.obstacle_count - 1];
+        s.obstacle_count -= 1;
     }
 }
 
-fn render(state: *State) void {
-    _ = c.SDL_SetRenderDrawColor(state.renderer, 0, 0, 0, 255);
-    _ = c.SDL_RenderClear(state.renderer);
+fn render(s: *State) void {
+    _ = c.SDL_SetRenderDrawColor(s.renderer, 0, 0, 0, 255);
+    _ = c.SDL_RenderClear(s.renderer);
 
     // ball
-    _ = c.SDL_SetRenderDrawColor(state.renderer, 255, 255, 255, 255);
-    _ = c.SDL_RenderFillRect(state.renderer, &c.SDL_Rect{
-        .x = state.ball.x - BALL_SIZE / 2,
-        .y = state.ball.y - BALL_SIZE / 2,
+    _ = c.SDL_SetRenderDrawColor(s.renderer, 255, 255, 255, 255);
+    _ = c.SDL_RenderFillRect(s.renderer, &c.SDL_Rect{
+        .x = s.ball.x - BALL_SIZE / 2,
+        .y = s.ball.y - BALL_SIZE / 2,
         .w = BALL_SIZE,
         .h = BALL_SIZE,
     });
 
     // paddle
-    _ = c.SDL_SetRenderDrawColor(state.renderer, 255, 255, 255, 255);
-    _ = c.SDL_RenderFillRect(state.renderer, &c.SDL_Rect{
-        .x = state.paddle.x - PADDLE_WIDTH / 2,
-        .y = state.paddle.y - 5,
+    _ = c.SDL_SetRenderDrawColor(s.renderer, 255, 255, 255, 255);
+    _ = c.SDL_RenderFillRect(s.renderer, &c.SDL_Rect{
+        .x = s.paddle.x - PADDLE_WIDTH / 2,
+        .y = s.paddle.y - 5,
         .w = PADDLE_WIDTH,
         .h = PADDLE_HEIGHT,
     });
 
     // obstacles
-    for (state.obstacles()) |obst| {
+    for (s.obstacles()) |obst| {
         _ = c.SDL_SetRenderDrawColor(
-            state.renderer,
+            s.renderer,
             @floatToInt(u8, @round((HEIGHT - @intToFloat(f32, obst.y) * 2) * 255 / HEIGHT)),
             @floatToInt(u8, @round(@intToFloat(f32, obst.x) * 255 / WIDTH)),
             @floatToInt(u8, @round((WIDTH - @intToFloat(f32, obst.x)) * 255 / WIDTH)),
             255,
         );
-        _ = c.SDL_RenderFillRect(state.renderer, &c.SDL_Rect{
+        _ = c.SDL_RenderFillRect(s.renderer, &c.SDL_Rect{
             .x = obst.x - OBSTACLE_WIDTH / 2,
             .y = obst.y - 5,
             .w = OBSTACLE_WIDTH,
@@ -217,5 +229,5 @@ fn render(state: *State) void {
         });
     }
 
-    _ = c.SDL_RenderPresent(state.renderer);
+    _ = c.SDL_RenderPresent(s.renderer);
 }
