@@ -50,7 +50,7 @@ pub fn main() !void {
 
     var s = State.init(renderer);
     while (!s.quit) {
-        try loop(&s);
+        loop(&s);
     }
 }
 
@@ -105,7 +105,7 @@ fn initial_obstacles() [OBSTACLES_C * OBSTACLES_R]Vec2 {
     return res;
 }
 
-fn loop(s: *State) !void {
+fn loop(s: *State) void {
     handle_events(s);
     update(s);
     render(s);
